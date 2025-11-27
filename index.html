@@ -332,11 +332,12 @@
                     <!-- ส่วน Login สำหรับ Desktop -->
                     <div id="loginSection" style="display: none; text-align: center; padding: 20px 0;">
                         <h3 style="margin-bottom: 16px;">กรุณาเข้าสู่ระบบ</h3>
-                        <p style="margin-bottom: 24px; color: #6B7280;">จำเป็นต้องเข้าสู่ระบบ LINE เพื่อยืนยันตัวตน</p>
+                        <p style="margin-bottom: 24px; color: #6B7280;">จำเป็นต้องเข้าสู่ระบบ LINE เพื่อยืนยันตัวตน และเพื่อให้ระบบสามารถส่งผลการตอบกลับไปยังไลน์ของคุณได้</p>
                         <button type="button" id="lineLoginBtn" class="btn btn-line-login">
                             เข้าสู่ระบบด้วย LINE
                         </button>
-                        <button type="button" id="guestLoginBtn" class="btn btn-guest" style="font-size: 0.9em;">
+                        <!-- ซ่อนปุ่ม Guest เพราะเราต้องการ User ID จริง -->
+                        <button type="button" id="guestLoginBtn" class="btn btn-guest" style="font-size: 0.9em; display: none;">
                             ทดสอบระบบ (Guest Mode)
                         </button>
                     </div>
@@ -442,46 +443,43 @@
             // --- Initialize LIFF Logic ---
             const initializeApp = async () => {
                 try {
-                    // Fetch Data first (Can be done in background, but keeping linear for simplicity)
+                    // Fetch Data first
                     await fetchSheetData();
 
                     if (typeof liff !== 'undefined') {
                         await liff.init({ liffId: LIFF_ID });
                         
-                        // Case 1: Already Logged In (Mobile or Desktop with session)
+                        // Case 1: Already Logged In
                         if (liff.isLoggedIn()) {
                             const profile = await liff.getProfile();
                             lineUserId = profile.userId;
                             isLiffMode = true;
                             showParticipantSection();
                         } 
-                        // Case 2: Not Logged In (Desktop Browser usually)
+                        // Case 2: Not Logged In
                         else {
                             loader.style.display = 'none';
                             loginSection.style.display = 'block';
                             
-                            // Setup Login Button
                             lineLoginBtn.onclick = () => {
-                                // Important: liff.login() requires the current URL to be registered in LIFF Console
+                                // Redirect to LINE Login
                                 if (!liff.isInClient()) {
                                     liff.login(); 
                                 } else {
                                     liff.login();
                                 }
                             };
-
-                            // Setup Guest Button (For Preview environment where Redirect is tricky)
+                            
                             guestLoginBtn.onclick = () => {
                                 lineUserId = 'GUEST-' + Math.floor(Math.random() * 100000);
                                 showParticipantSection();
-                            };
+                            }
                         }
                     } else {
                         throw new Error("LIFF SDK not loaded");
                     }
                 } catch (error) {
                     console.warn('LIFF Init failed or Error:', error);
-                    // Fallback to Guest if LIFF completely fails
                     lineUserId = 'WEB-ERROR-USER';
                     showParticipantSection();
                 }
@@ -496,7 +494,7 @@
             // --- Helper Function for Google Drive Links ---
             function convertGoogleDriveLink(url) {
                 if (!url) return '';
-                if (!url.includes('drive.google.com')) return url; // Return original if not drive link
+                if (!url.includes('drive.google.com')) return url;
                 const match = url.match(/drive\.google\.com.*[?&]id=([a-zA-Z0-9_-]+)|file\/d\/([a-zA-Z0-9_-]+)/);
                 const fileId = match ? (match[1] || match[2]) : null;
                 return fileId ? `https://lh3.googleusercontent.com/d/${fileId}` : '';
@@ -596,7 +594,7 @@
                 window.scrollTo(0, 0);
             });
             
-            // --- Form Submission Logic ---
+            // --- Form Submission Logic (UPDATED for Browser Push) ---
             form.addEventListener('submit', async function(event) {
                 event.preventDefault();
                 submitButton.disabled = true;
@@ -623,39 +621,7 @@
                     a5: document.getElementById('answer5').value.trim() || '-',
                 };
                 
-                // --- 2. Send to GAS ---
-                try {
-                    const formData = new FormData();
-                    formData.append('timestamp', new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' }));
-                    formData.append('lineUserId', lineUserId);
-                    formData.append('participant', participantName);
-                    formData.append('lesson', lesson);
-                    formData.append('q1', questions.q1); formData.append('a1', answers.a1);
-                    formData.append('q2', questions.q2); formData.append('a2', answers.a2);
-                    formData.append('q3', questions.q3); formData.append('a3', answers.a3);
-                    formData.append('q4', questions.q4); formData.append('a4', answers.a4);
-                    formData.append('q5', questions.q5); formData.append('a5', answers.a5);
-
-                    const response = await fetch(GAS_URL, {
-                        method: 'POST',
-                        body: formData,
-                    });
-                    
-                    const result = await response.json();
-
-                    if (result.result !== 'success') {
-                         throw new Error('Script returned non-success result');
-                    }
-                    
-                } catch (error) {
-                    console.error('Submission Error:', error);
-                    showModal('เกิดข้อผิดพลาด', 'ไม่สามารถบันทึกข้อมูลได้ โปรดลองอีกครั้ง');
-                    submitButton.disabled = false;
-                    submitButton.textContent = 'ส่งคำตอบ';
-                    return;
-                }
-
-                // --- 3. Share via LIFF ---
+                // Prepare Message
                 const summaryMessage = `📝 สรุปผลการตอบแบบสอบถาม
 -------------------------
 ผู้ตอบ: ${participantName}
@@ -679,25 +645,50 @@ User ID: ${lineUserId.startsWith('GUEST') ? 'Guest' : lineUserId.substring(0, 5)
 -------------------------
 ขอบคุณที่ร่วมตอบแบบสอบถาม`;
 
+                // --- 2. Send to GAS ---
                 try {
-                    if (isLiffMode && liff.isInClient()) {
-                        await liff.sendMessages([{ type: 'text', text: summaryMessage }]);
+                    const formData = new FormData();
+                    formData.append('timestamp', new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' }));
+                    formData.append('lineUserId', lineUserId);
+                    formData.append('participant', participantName);
+                    formData.append('lesson', lesson);
+                    formData.append('q1', questions.q1); formData.append('a1', answers.a1);
+                    formData.append('q2', questions.q2); formData.append('a2', answers.a2);
+                    formData.append('q3', questions.q3); formData.append('a3', answers.a3);
+                    formData.append('q4', questions.q4); formData.append('a4', answers.a4);
+                    formData.append('q5', questions.q5); formData.append('a5', answers.a5);
+                    
+                    // *** IMPORTANT FIX: Send push parameters to GAS ***
+                    formData.append('pushMessage', 'true');
+                    formData.append('messageContent', summaryMessage);
+
+                    const response = await fetch(GAS_URL, {
+                        method: 'POST',
+                        body: formData,
+                    });
+                    
+                    const result = await response.json();
+
+                    if (result.result !== 'success') {
+                         throw new Error('Script returned non-success result');
+                    }
+
+                    // Success Handling (Combined)
+                    if (liff.isInClient()) {
+                        // If in LINE App, close window
                         liff.closeWindow();
-                    } else if (isLiffMode && liff.isApiAvailable('shareTargetPicker')) {
-                         await liff.shareTargetPicker([{ type: 'text', text: summaryMessage }]);
-                         showModal('สำเร็จ!', 'ส่งข้อมูลเรียบร้อยแล้ว', () => location.reload());
                     } else {
-                        // Web Fallback
-                        console.log("Message that would be sent:", summaryMessage);
-                        showModal('บันทึกสำเร็จ', 'บันทึกข้อมูลเรียบร้อยแล้ว (การส่งข้อความ LINE จะทำงานเมื่อเปิดในแอป)', () => {
+                        // If in Browser, show success modal
+                        showModal('บันทึกสำเร็จ', 'ข้อมูลถูกบันทึกและส่งเข้า LINE ของคุณเรียบร้อยแล้ว', () => {
                             location.reload();
                         });
                     }
+                    
                 } catch (error) {
-                    console.error('LIFF Share Error:', error);
-                    showModal('บันทึกสำเร็จ', 'บันทึกข้อมูลลง Sheet แล้ว (แต่ไม่สามารถส่งข้อความเข้าแชทได้)', () => {
-                        location.reload();
-                    });
+                    console.error('Submission Error:', error);
+                    showModal('เกิดข้อผิดพลาด', 'ไม่สามารถบันทึกข้อมูลได้ โปรดลองอีกครั้ง');
+                    submitButton.disabled = false;
+                    submitButton.textContent = 'ส่งคำตอบ';
                 }
             });
 
